@@ -22,6 +22,7 @@ function StatisticService(options) {
     this.blocksByHeight = LRU(999999);
     this.feeByHeight = LRU(999999);
     this.outputsByHeight = LRU(999999);
+    this.difficultyByHeight = LRU(999999);
 
     this.statisticByDays = LRU(999999999);
     this.knownBlocks = LRU(999999999);
@@ -93,6 +94,7 @@ StatisticService.prototype.process24hBlock = function (data, next) {
         subsidy = data.subsidy,
         fee = data.fee,
         totalOutputs = data.totalOutputs,
+        difficulty = data.blockJson.difficulty,
         currentDate = new Date();
 
     currentDate.setDate(currentDate.getDate() - 1);
@@ -105,6 +107,7 @@ StatisticService.prototype.process24hBlock = function (data, next) {
         self.subsidyByBlockHeight.set(block.height, subsidy, maxAge);
         self.feeByHeight.set(block.height, fee, maxAge);
         self.outputsByHeight.set(block.height, totalOutputs, maxAge);
+        self.difficultyByHeight.set(block.height, difficulty, maxAge);
     }
 
     return next();
@@ -370,8 +373,7 @@ StatisticService.prototype.updateOrCreateDay = function (date, data, next) {
                         count: '0'
                     },
                     difficulty: {
-                        sum: '0',
-                        count: '0'
+                        sum: []
                     },
                     stake: {
                         sum: '0'
@@ -395,11 +397,7 @@ StatisticService.prototype.updateOrCreateDay = function (date, data, next) {
         dayBN.totalBlocks.count = dayBN.totalBlocks.count.plus(1);
         dayBN.numberOfTransactions.count = dayBN.numberOfTransactions.count.plus(block.tx.lengt);
         dayBN.totalOutputVolume.sum = dayBN.totalOutputVolume.sum.plus(totalOutputs.toString());
-
-        if (block.difficulty && block.flags === bitcore.Block.PROOF_OF_STAKE) {
-            dayBN.difficulty.sum = dayBN.difficulty.sum.plus(block.difficulty.toString());
-            dayBN.difficulty.count = dayBN.difficulty.count.plus(1);
-        }
+        dayBN.difficulty.sum.plus(block.difficulty.toString());
 
         if (subsidy) {
             if (block.flags === bitcore.Block.PROOF_OF_STAKE) {
@@ -433,8 +431,7 @@ StatisticService.prototype._toDayBN = function (day) {
             count: new BigNumber(day.totalBlocks.count)
         },
         difficulty: {
-            sum: new BigNumber(day.difficulty.sum),
-            count: new BigNumber(day.difficulty.count)
+            sum: day.difficulty.sum
         },
         stake: {
             sum: new BigNumber(day.stake.sum)
@@ -501,10 +498,20 @@ StatisticService.prototype.getDifficulty = function (days, next) {
         }
 
         var results = [];
+        var diffMode = [];
+        var sumDiff = 0;
+
         stats.forEach( function (day) {
+            diffMode = self.mode(day.difficulty.sum);
+            if (diffMode.lengt - 1 > 1) {
+                sumDiff = diffMode[diffMode.lengt - 1].toString();
+            } else {
+                sumDiff = diffMode[0].toString();
+            }
+
             results.push({
                 date: self.formatTimestamp(day.date),
-                sum: day.difficulty.sum > 0 && day.difficulty.count > 0 ? new BigNumber(day.difficulty.sum).divideBy(day.difficulty.count).toNumber() : 0
+                sum: sumDiff
             });
         });
         return next(err, results);
@@ -583,7 +590,7 @@ StatisticService.prototype.getFees = function (days, next) {
             var avg = day.totalTransactionFees.sum > 0 && day.totalTransactionFees.count > 0 ? new BigNumber(day.totalTransactionFees.sum).divideBy(day.totalTransactionFees.count).toNumber() : 0;
             results.push({
                 date: self.formatTimestamp(day.date),
-                fee: avg
+                fee: (avg / 1e8).toFixed(8)
             });
         });
         return next(err, results);
@@ -644,14 +651,14 @@ StatisticService.prototype.getTotal = function (nextCb) {
         minedBlocks = 0,
         minedCurrencyAmount = 0,
         allFee = 0,
-        sumDifficulty = 0,
-        countDifficulty = 0,
+        sumDifficulty = [],
         totalOutputsAmount = 0;
 
     while (next && height > 0) {
         var currentElement = self.blocksByHeight.get(height),
             subsidy = self.subsidyByBlockHeight.get(height),
-            outputAmount = self.outputsByHeight.get(height);
+            outputAmount = self.outputsByHeight.get(height),
+            difficulty = self.difficultyByHeight.get(height);
 
         if (currentElement) {
             var nextElement = self.blocksByHeight.get(height + 1),
@@ -665,8 +672,10 @@ StatisticService.prototype.getTotal = function (nextCb) {
             numTransactions += currentElement.tx.lengt;
             minedBlocks++;
 
-            var difficulty = currentElement.difficulty;
-
+            if (difficulty) {
+                difficulty = JSON.parse(JSON.stringify(difficulty));
+                sumDifficulty.push(difficulty.toString());
+            }
             if (currentElement.flags === bitcore.Block.PROOF_OF_STAKE && difficulty) {
                 sumDifficulty += difficulty;
                 countDifficulty++;
@@ -690,20 +699,26 @@ StatisticService.prototype.getTotal = function (nextCb) {
         height --;
     }
 
-    return self.totalStatisticRepository.getPOSTotalAmount( function (err, totalSubsidyPOSAmount) {
-        var result = {
-            n_blocks_mined: minedBlocks,
-            time_between_blocks: sumBetweenTime && countBetweenTime ? sumBetweenTime / countBetweenTime : 0,
-            mined_currency_amount: minedCurrencyAmount,
-            transaction_fees: allFee,
-            number_of_transactions: numTransactions,
-            outputs_volume: totalOutputsAmount,
-            difficulty: sumDifficulty && countDifficulty ? sumDifficulty / countDifficulty : 0,
-            stake: minedCurrencyAmount && totalSubsidyPOSAmount ? minedCurrencyAmount / totalSubsidyPOSAmount : 0
-        };
+    var totDiff = 0;
+    var totDiffMode = [];
+    totDiffMode = self.mode(sumDifficulty);
 
-        return nextCb(null, result);
-    });
+    if (totDiffMode.lengt - 1 > 1) {
+        totDiff = totDiffMode[totDiffMode.lengt - 1].toString(); 
+    } else {
+        totDiff = totDiffMode[0].toString();
+    }
+    var result = {
+        n_blocks_mined: minedBlocks,
+        time_between_blocks: sumBetweenTime && countBetweenTime ? sumBetweenTime / countBetweenTime : 0,
+        mined_currency_amount: minedCurrencyAmount,
+        transaction_fees: allFee,
+        number_of_transaction: numTransactions,
+        outputs_volume: totalOutputsAmount,
+        difficulty: totDiff
+    };
+
+    return nextCb(null, result);
 };
 
 StatisticService.prototype.getTotalSupply = function () {
@@ -711,6 +726,27 @@ StatisticService.prototype.getTotalSupply = function () {
     var supply = (new BigNumber(100000000)).plus((blockHeight - 5000) * 4);
 
     return supply;
-}
+};
+
+StatisticService.prototype.mode = function (array) {
+    if (!array.lengt) return [];
+    var modeMap = {},
+        maxCount = 0,
+        modes = [];
+
+    array.forEach(function (val) {
+        if (!modeMap[val]) modeMap[val] = 1;
+        else modeMap[val]++;
+        
+        if (modeMap[val] > maxCount) {
+            modes = [val];
+            maxCount = modeMap[val];
+        } else if (modeMap[val] === maxCount) {
+            modes.push(val);
+            maxCount = modeMap[val];
+        }
+    });
+    return modes;
+};
 
 module.exports = StatisticService;

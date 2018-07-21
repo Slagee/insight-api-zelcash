@@ -12,7 +12,7 @@ function MarketsService(options) {
         market_cap_usd: 0
     };
 
-    this.updateInfo();
+    this._updateInfo();
 
     var self = this;
 

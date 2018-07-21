@@ -21,4 +21,4 @@ const lastBlockSchema  = new mongoose.Schema({
 
 const LastBlock = mongoose.model('LastBloc', lastBlockSchema);
 
-model.exports = LastBlock;
+module.exports = LastBlock;

@@ -163,14 +163,7 @@ AddressBlocksMinedService.prototype.processBlock = function (blockHeight, next) 
     }, function (callback) {
         var txHash;
 
-        switch (block.flags) {
-            case bitcore.Block.PROOF_OF_STAKE:
-                txHash = block.tx[1];
-                break;
-            case bitcore.Block.PROOF_OF_WORK:
-                txHash = block.tx[0];
-                break;
-        }
+        txHash = block.tx[0];
 
         return self.node.getDetailedTransaction(txHash, function (err, trx) {
             if (err) {
@@ -209,6 +202,19 @@ AddressBlocksMinedService.prototype.processBlock = function (blockHeight, next) 
             return next(err);
         });
     });
+};
+
+AddressBlocksMinedService.prototype.getBlockReward = function (height) {
+    var halvings = Math.floor(height / 2100000);
+
+    if (halvings >= 64) {
+        return 0;
+    }
+
+    var subsidy = new BN(5000 * 1e8);
+    subsidy = subsidy.shrn(halvings);
+
+    return parseInt(subsidy.toString(10));
 };
 
 module.exports = AddressBlocksMinedService;
